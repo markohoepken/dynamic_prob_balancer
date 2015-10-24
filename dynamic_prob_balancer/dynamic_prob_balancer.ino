@@ -21,7 +21,7 @@ Each run takes just 3 seconds.
 
 Each round you get a good indicator to add or remove weight.
 
-Now prob balanceing is fun an save (no longer "touch" the motor to "feel" the missbalnace.) 
+Now prob balanceing is fun an save (no longer "touch" the motor to "feel" the missbalance.) 
  
  ****************************************************/
 
@@ -104,6 +104,8 @@ void setup(void) {
   // RPM measure / position
   //attachInterrupt(1, count_rotation, FALLING);
   
+  //calibrate acc to zero (horiztontal allignment of sensor)
+  calibrate_sensor();
   // setup analog compare
   ACSR = 
   (0<<ACD) |   // Analog Comparator: Enabled
@@ -125,6 +127,7 @@ void setup(void) {
 uint16_t last_poti=65535;
 uint16_t servo_pos=0;
 int16_t AcX,AcY,AcZ,Tmp,GyX,GyY,GyZ;
+int16_t sensor_offset=0; // auto leveling
 
 int16_t AcY_max=0;
 int16_t AcY_min=0;
@@ -136,7 +139,7 @@ uint8_t update_screen=UPDATE_SCREEN;
 
 uint16_t measure_index=0;
 uint16_t reference_position=0;
-#define MEASURE_ARRAY 100
+#define MEASURE_ARRAY 200
 int16_t AcY_measure[MEASURE_ARRAY];
 uint8_t index_pos[MEASURE_ARRAY];
 
@@ -170,6 +173,9 @@ void loop(void) {
     }        
     if((digitalRead(KEY3) == PRESS)) // run test with ESC controll
     {
+        // autolevel sensor
+        calibrate_sensor();
+           
         measure_index=0; // reset test counter
         // run test
         motor.write(MOTOR_TEST); 
@@ -182,6 +188,7 @@ void loop(void) {
         test_rotation_time=rotation_time;
 
         // start probing
+        motor_pulse=false; // reset last detection
         for(uint8_t index=0;index<MEASURE_ARRAY;index++)
         {
             AcY_measure[measure_index]=read_y_sensor();
@@ -196,7 +203,10 @@ void loop(void) {
             measure_index++;  
             //delay(10);
         }
+        // turn off motor
+        motor.write(MOTOR_MIN); 
         #if 1
+        // give debug messures on uart
         for(uint8_t index=0;index<MEASURE_ARRAY;index++)
         {
             Serial.print(index); 
@@ -206,7 +216,6 @@ void loop(void) {
             Serial.println(index_pos[index]);
         }        
         #endif
-        motor.write(MOTOR_MIN); 
         // measurements done
         // do anaysis, find min and max and polarity
         AcY_max=AcY_measure[0];
@@ -215,6 +224,7 @@ void loop(void) {
         uint8_t not_marker_side=0;
         for(uint8_t index=0;index<MEASURE_ARRAY;index++)
         {
+            //  get min / max
             if(AcY_max<AcY_measure[index])
             {
                 AcY_max=AcY_measure[index];
@@ -223,9 +233,7 @@ void loop(void) {
             {
                 AcY_min=AcY_measure[index];
             }            
-       
             // check for polarity on index
-
             if(index_pos[index]) 
             {
                 if(AcY_measure[index]>0)
@@ -238,21 +246,24 @@ void loop(void) {
                 }
             }
         }
-        // summary
+        // calculate summary
         if(marker_side && not_marker_side)
         {
             balance_side=0; // undefined
         }
-        if(marker_side)
+        else 
         {
-            balance_side=1;
-        }
-        else
-        {
-            balance_side=-1;
+            if(marker_side)
+            {
+                balance_side=1;
+            }
+            else
+            {
+                balance_side=-1;
+            }
         }
     }
-    else
+    else // debug for manual motor controll
     {
         poti=analogRead(POTI);
         servo_pos = map(poti, 0, 1023, MOTOR_MIN, MOTOR_MAX);     // scale it to use it with the servo (value between 0 and 180) 
@@ -270,8 +281,8 @@ void loop(void) {
         tft.fillScreen(ST7735_BLACK);
         tft.setCursor(0, y_pos);
         y_pos+=SIZE;
-        tft.print("Servo:");
-        tft.print(servo_pos);       
+        tft.print("cal:");
+        tft.print(sensor_offset);       
         tft.setCursor(0, y_pos);        
         y_pos+=SIZE;  
         tft.print("val:");
@@ -302,6 +313,18 @@ void loop(void) {
 
 }
 
+void calibrate_sensor(void)
+{
+    #define AUTO_LEVEL_LOOP 100
+    int32_t calibrate=0;
+    sensor_offset=0; // reset to get uncorrected values
+    for(uint8_t loop=0;loop<AUTO_LEVEL_LOOP;loop++)
+    {
+        calibrate+=read_y_sensor(); // sum up
+    }
+    sensor_offset=calibrate/AUTO_LEVEL_LOOP; // save average
+}
+
 int16_t read_y_sensor()
 {
     int16_t value;
@@ -312,7 +335,7 @@ int16_t read_y_sensor()
     Wire.endTransmission(false);
     Wire.requestFrom(MPU,2,true);  // request a total of 2 registers
     value=Wire.read()<<8|Wire.read();  // 0x3D (ACCEL_yOUT_H) & 0x3e (ACCEL_OUT_L)   
-    return(value);
+    return(value-sensor_offset);
 }
 
 ISR(ANALOG_COMP_vect )
